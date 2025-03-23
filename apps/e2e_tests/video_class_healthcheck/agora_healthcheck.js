@@ -10,7 +10,7 @@ const url = process.env.url;
     const screenshotPath = path.join(__dirname, 'test_screenshots');
 
     try {
-        console.log('Agora 헬스체크 e2e 테스트 시작');
+        console.log('*** 헬스체크 e2e 테스트 시작');
         await page.goto(url);
         // Start RTC Test
         try {
@@ -28,7 +28,7 @@ const url = process.env.url;
             await page.click('button:has-text("Start RTM Test")');
             await page.waitForSelector('text=RTM Test Success', { timeout: 5000 });
             console.log('RTM Test completed successfully.');
-            console.log('Agora 헬스체크 e2e 테스트 성공.');
+            console.log('*** 헬스체크 e2e 테스트 성공.');
         } catch (error) {
             console.error('RTM Test failed:', error);
         }
