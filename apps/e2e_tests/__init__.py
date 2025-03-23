@@ -1,0 +1,1 @@
+from apps.e2e_tests.video_class_healthcheck.test_runner import run_playwright_test

@@ -1,0 +1,70 @@
+name: "Check duplicated container image"
+description: "Check duplicated container image tag in Amazon ECR"
+
+inputs:
+  ecr-repo-prefix:
+    description: "Amazon ECR repository name (prefix added all target projects)"
+    required: true
+  trimmed-target-projects:
+    description: "Amazon ECR repository names (delimeter: ' ')"
+    required: true
+  target-image-tag:
+    description: "Target image tag to check is duplicated"
+    required: true
+  suspend-if-not-exist:
+    description: "Flag('true') to suspend when could not find out the image-tag at Amazon ECR"
+    required: false
+  remove-if-duplicated:
+    description: "Flag('true') to remove when the the duplicated image-tag exist at Amazon ECR"
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: 🏃 [CHECK/TAG-DUPLICATION] Check inputs
+      shell: bash
+      run: |
+        cat <<EOF
+        🔎 ecr-repo-prefix         : ${{ inputs.ecr-repo-prefix }}
+        🔎 trimmed-target-projects : ${{ inputs.trimmed-target-projects }}
+        🔎 target-image-tag     : ${{ inputs.target-image-tag }}
+        🔎 suspend-if-not-exist : ${{ inputs.suspend-if-not-exist }}
+        🔎 remove-if-duplicated : ${{ inputs.remove-if-duplicated }}
+        EOF
+
+    - name: 🏃 [CHECK/TAG-DUPLICATION] Check step for already uploaded image named with git tag('${{ inputs.target-image-tag }}') & Remove if need.
+      shell: bash
+      run: |
+        for project in ${{ inputs.trimmed-target-projects }}; do
+            # Check exist
+            aws ecr describe-images \
+                --repository-name "${{ inputs.ecr-repo-prefix }}/${project}" \
+                --image-ids imageTag=${{ inputs.target-image-tag }} >> /dev/null 2>&1 || exit_code=$?
+            echo "🔎 exit_code: ${exit_code} (in ${project})"
+
+            # No exist case
+            [[ ${exit_code} > 0 ]] && {
+                echo "❗️ No exist duplicated image."
+                [[ "${{ inputs.suspend-if-not-exist }}" == "true" ]] && {
+                    >&2 echo "❌ Suspend!! The flag 'suspend-if-not-exist' is alive. (Caused by. Exist duplicated image tag('${{ inputs.target-image-tag }}') at Amazon ECR repository('${{ inputs.ecr-repo-prefix }}/${project}')"
+                    exit ${exit_code}
+                }
+                continue
+            } || \
+            echo "❗️ Exist duplicated image."
+
+            # Exist case
+            echo "💥 Unfortuantly Duplicated tag('${{ inputs.target-image-tag }}') is exist!"
+            [[ "${{ inputs.remove-if-duplicated }}" == "true" ]] && {
+                echo "🗑 The flag 'remove-if-duplicated' is alive. Try to send request to remove this tag at Amazon ECR repository."
+                aws ecr batch-delete-image \
+                    --repository-name "${{ inputs.ecr-repo-prefix }}/${project}" \
+                    --image-ids imageTag=${{ inputs.target-image-tag }} | jq '.'
+                echo "✅ Removed!" && echo ""
+                continue
+            } || \
+            echo "❎ Skip to delete.."
+        done
+
+        echo "🔎 All projects is ready to accept new tag ('${{ inputs.target-image-tag }}')"
+        echo "🔎 - Checked projects: ${{ inputs.trimmed-target-projects }}"

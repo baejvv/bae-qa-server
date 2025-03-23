@@ -1,0 +1,460 @@
+name: ci-containerize
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [develop]
+    types: [opened, reopened, synchronize]
+    paths-ignore: ['ci.properties', '.*ignore', '.*rc', '*.md', '.idea/**', 'doc/**', '.husky/**', '*.sh', '*.lock']
+  push:
+    branches: [develop, hotfix/*, main]
+    paths-ignore: ['ci.properties', '.*ignore', '.*rc', '*.md', '.idea/**', 'doc/**', '.husky/**', '*.sh', '*.lock']
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # Monorepo
+  COMMON_INCLUDES: "Dockerfile, manage.py, requirements.txt"
+  # GitOps: Integration target of 'git branches'
+  GITOPS_REPO_NAME: "qa-gitops"
+
+jobs:
+  # ===============================================================================
+  # *** [ Fecth for matrix: dynamic build job per project (check build needs) ] ***
+  # ===============================================================================
+  fetch:
+    runs-on: [ gha-runner-small ]
+    continue-on-error: false
+    steps:
+      - name: 🚀 [INIT] Clone repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: 🚀 [EXTRACT] Get environment variables from repository
+        id: env-from-repo
+        uses: kidsworld-service/repo-env-action@main
+
+      - name: 🚀 [EXTRACT] Get environment variables from self-hosted runner
+        id: env-from-runner
+        uses: kidsworld-service/runner-env-action@main
+
+      - name: 🚀 [MATRIX] Extract keys and convert to JSON
+        id: set-matrix
+        run: |
+          keys=$(grep -o "^[^#=]*" ci.properties | grep -vE "appVersion|appName" | tr -d ' ' | paste -sd ',' - | awk '{print "\"" $0 "\""}')
+          echo "matrix=$keys" >> $GITHUB_OUTPUT
+
+      - name: 🚀 [MATRIX] Find matrix from monorepo
+        id: matrix-from-monorepo-dev
+        uses: kidsworld-service/matrix-from-monorepo-action@main
+        with:
+          common-includes: "${{ env.COMMON_INCLUDES }}"
+          target-projects: "${{ steps.set-matrix.outputs.matrix }}"
+
+      # ------------------------------
+      # > SEMANTIC TAG
+      # ------------------------------
+      - name: 🚀 [SET] Git committer setting with PAT
+        run: |
+          git config --global user.email "github-actions@github.com"
+          git config --global user.name "github-actions"
+          git remote -v
+
+      - name: 🚀 [TAG] Get next release candidate number
+        id: rc-tag
+        uses: kidsworld-service/check-rc-tag-in-repo@main
+        with:
+          semantic-version: "v${{ env.APP_VERS }}"
+
+      - name: 🚀 [TAG] Create a new tag named with 'next release candidate number', then push
+        if: ${{ github.ref != 'refs/heads/develop' }}
+        id: sem-ver-rc-tag
+        env:
+          SEM_VERS: "v${{ env.APP_VERS }}"
+          NEXT_RC: "v${{ env.APP_VERS }}_rc${{ env.NEXT_RC_NUM }}"
+        run: |
+          git tag -a v${{ env.APP_VERS }}_rc${{ env.NEXT_RC_NUM }} -m "Auto created release candidate of 'v${{ env.APP_VERS }}' at '${{ env.TIMESTAMP }}'"
+          NEW_TAG_COUNT=$(git tag --list | grep "v${{ env.APP_VERS }}_rc${{ env.NEXT_RC_NUM }}" | wc -l)
+          [[ ${NEW_TAG_COUNT} = 0 ]] && {
+              >&2 echo "🔎 Cannot find out new release candidate: v${{ env.APP_VERS }}_rc${{ env.NEXT_RC_NUM }}"
+              exit 1
+          }
+
+          [[ ${{ github.ref == 'refs/heads/main' }} == "true" ]] && {
+            echo "🔎 Tagged new release candidate: v${{ env.APP_VERS }}_rc${{ env.NEXT_RC_NUM }}"
+            git show v${{ env.APP_VERS }}_rc${{ env.NEXT_RC_NUM }}
+
+            echo "🔎 Try to push"
+            git push origin v${{ env.APP_VERS }}_rc${{ env.NEXT_RC_NUM }}
+
+            echo "SEM_VER_RC=v${{ env.APP_VERS }}_rc${{ env.NEXT_RC_NUM }}" >> $GITHUB_ENV
+            exit 0
+          }
+          
+          echo "SEM_VER_RC=${{ github.ref_name }}" >> $GITHUB_ENV
+
+    outputs:
+      # EXTRACT: app
+      APP_NAME: ${{ env.APP_NAME }}
+      APP_VERS: ${{ env.APP_VERS }}
+      # EXTRACT: git
+      GIT_BRANCH_SHA: ${{ env.GIT_BRANCH_SHA }}
+      GIT_BRANCH: ${{ env.GIT_BRANCH }}
+      TARGET_GITOPS_BRANCH: ${{ env.TARGET_GITOPS_BRANCH }}
+      # EXTRACT: tag
+      TIMESTAMP: ${{ env.TIMESTAMP }}
+      TIME_TAG: ${{ env.TIME_TAG }}
+      HASH_TAG: ${{ env.HASH_TAG }}
+      # EXTRACT: runner env vars
+      AWS_REGION: ${{ env.AWS_REGION }}
+      FEDERATED_IR_NAME: ${{ env.FEDERATED_IR_NAME }}
+      FEDERATED_SA_NAME: ${{ env.FEDERATED_SA_NAME }}
+      # MATRIX
+      PROJECTS: ${{ env.DIFF_EXIST_PROJECTS }}
+      ALL_PROJECTS: ${{ env.TRIMMED_PROJECTS }}
+      TRIMMED_PROJECTS: ${{ env.TRIMMED_DIFF_EXIST_PROJECTS }}
+      # MATRIX: for Gradle
+      HAS_DIFF_PROJECTS: ${{ env.HAS_DIFF_PROJECTS }}
+      MATRIX_PROJECT: ${{ env.MATRIX_PROJECT }}
+      SEM_VER_RC: ${{ env.SEM_VER_RC }}
+
+  # ===========================================================
+  # *** [ Dynamic build job per project (based on matrix) ] ***
+  # ===========================================================
+  build:
+    needs: [fetch]
+    if: ${{ needs.fetch.outputs.HAS_DIFF_PROJECTS }}
+    runs-on: [ gha-runner-small ]
+    strategy:
+      matrix:
+        ${{ fromJSON(needs.fetch.outputs.MATRIX_PROJECT) }}
+    env:
+      ECR_REPO_PREFIX: ${{ needs.fetch.outputs.APP_NAME }}
+      SEM_VERS: "v${{ needs.fetch.outputs.APP_VERS }}"
+    steps:
+      - name: 🚀 [INIT] Clone repository
+        uses: actions/checkout@v4
+
+      # ------------------------------
+      # > Set: Docker
+      # ------------------------------
+      - name: 🚀 [SET] Docker CLI
+        uses: kidsworld-service/set-docker-cli-action@main-minio
+        with:
+          minio-access-key-id: ${{ secrets.MINIO_ACCESS_KEY_ID }}
+          minio-secret-access-key: ${{ secrets.MINIO_SECRET_ACCESS_KEY }}
+
+      # ------------------------------
+      # > Set: AWS
+      # ------------------------------
+      - name: 🚀 [SET] AWS CLI with Assuming
+        uses: kidsworld-service/set-aws-cli-action@main
+        with:
+          # common
+          aws-region: "${{ needs.fetch.outputs.AWS_REGION }}"
+          prefix-id: "${{ needs.fetch.outputs.APP_NAME }}-${{ matrix.project }}"
+          unique-id: "${{ needs.fetch.outputs.GIT_BRANCH_SHA }}-runner-${{ github.run_number }}"
+          # for ACT in local running
+          act-role-arn: "${{ env.AWS_ROLE_ARN }}"
+          act-session-name: "${{ env.AWS_ROLE_SESSION_NAME }}"
+          # for self-hosted runner in EKS
+          federated-role-name: "${{ needs.fetch.outputs.FEDERATED_IR_NAME }}"
+
+      - name: 🚀 [SET] Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          mask-password: 'true'
+
+      - name: 🚀 [SSOT/ECR] Tagging
+        id: tag-container-image
+        env:
+          ecr-repo-url: ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPO_PREFIX }}/${{ matrix.project }}
+        run: |
+          ECR_HASH_TAG="${{ env.ecr-repo-url }}:${{ needs.fetch.outputs.HASH_TAG }}"
+          ECR_TIME_TAG="${{ env.ecr-repo-url }}:${{ needs.fetch.outputs.TIME_TAG }}"
+          ECR_LATEST_TAG="${{ env.ecr-repo-url }}:latest"
+          ECR_RC_TAG="${{ env.ecr-repo-url }}:${{ needs.fetch.outputs.SEM_VER_RC }}"
+          cat <<EOF
+          🔎 ECR_HASH_TAG : ${ECR_HASH_TAG}
+          🔎 ECR_TIME_TAG : ${ECR_TIME_TAG}
+          🔎 ECR_TIME_TAG : ${ECR_LATEST_TAG}
+          🔎 ECR_RC_TAG : ${ECR_RC_TAG}
+          EOF
+
+          echo "ECR_HASH_TAG=${ECR_HASH_TAG}" >> $GITHUB_ENV
+          echo "ECR_TIME_TAG=${ECR_TIME_TAG}" >> $GITHUB_ENV
+          echo "ECR_LATEST_TAG=${ECR_LATEST_TAG}" >> $GITHUB_ENV
+          echo "ECR_RC_TAG=${ECR_RC_TAG}" >> $GITHUB_ENV
+          
+      # develop branch case.
+      - if: ${{ github.ref == 'refs/heads/develop' }}
+        name: 🚀 [BUILD] Build application container image - development
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: 'Dockerfile'
+          push: true
+          tags: |
+            ${{ env.ECR_HASH_TAG }}
+            ${{ env.ECR_TIME_TAG }}
+            ${{ env.ECR_LATEST_TAG }}
+          cache-from: |
+            type=local,src=/tmp/.buildx-cache
+          cache-to: |
+            type=local,mode=max,dest=/tmp/.buildx-cache-new
+
+      # release branch case.
+      - if: ${{ github.ref == 'refs/heads/main' }}
+        name: 🚀 [BUILD] Build application container image - beta
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: 'Dockerfile'
+          push: true
+          tags: |
+            ${{ env.ECR_HASH_TAG }}
+            ${{ env.ECR_TIME_TAG }}
+            ${{ env.ECR_LATEST_TAG }}
+            ${{ env.ECR_RC_TAG }}
+          cache-from: |
+            type=local,src=/tmp/.buildx-cache
+          cache-to: |
+            type=local,mode=max,dest=/tmp/.buildx-cache-new
+
+      # production branch case.
+      - if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        name: 🚀 [BUILD] Build application container image - production
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: 'Dockerfile'
+          push: true
+          tags: |
+            ${{ env.ECR_HASH_TAG }}
+            ${{ env.ECR_TIME_TAG }}
+            ${{ env.ECR_LATEST_TAG }}
+            ${{ env.ECR_RC_TAG }}
+          cache-from: |
+            type=local,src=/tmp/.buildx-cache
+          cache-to: |
+            type=local,mode=max,dest=/tmp/.buildx-cache-new
+
+  # ==========================
+  # *** [ Push to GitOps ] ***
+  # ==========================
+  push-to-gitops:
+    needs: [fetch, build]
+    if: ${{ startsWith(github.ref, 'refs/heads/develop') }}
+    runs-on: [ gha-runner-small ]
+    env:
+      gitops-path: ./gitops
+    steps:
+      - name: 🚀 [INIT] Clone this repository
+        uses: actions/checkout@v4
+
+      - name: 🚀 [INIT] Clone GitOps repository
+        uses: actions/checkout@v4
+        with:
+          path: ${{ env.gitops-path }}
+          repository: ${{ github.repository_owner }}/${{ env.GITOPS_REPO_NAME }}
+          ref: ${{ needs.fetch.outputs.TARGET_GITOPS_BRANCH }}
+          token: ${{ secrets.SA_DEPLOY_GIT_PAT }}
+
+      # ------------------------------
+      # > PREPARE
+      # ------------------------------
+      - name: 🚀 [PREPARE] Set chart directory
+        id: set-chart-directory
+        run: |
+          GITOPS_CHART_DIR="${{ env.gitops-path }}"
+          echo "🔎 GITOPS_CHART_DIR : ${GITOPS_CHART_DIR}"
+          echo "GITOPS_CHART_DIR=${GITOPS_CHART_DIR}" >> $GITHUB_ENV
+
+      # ------------------------------
+      # > SSOT: Write down values
+      # ------------------------------
+      - name: 🚀 [SSOT/IMAGE-TAG] Update 'image tag(${{ needs.fetch.outputs.TIME_TAG }})' with 'comment(${{ needs.fetch.outputs.HASH_TAG }})'
+        uses: kidsworld-service/set-image-tag-in-chart-action@main
+        with:
+          monorepo-charts-path: ${{ env.GITOPS_CHART_DIR }}
+          trimmed-projects: ${{ needs.fetch.outputs.TRIMMED_PROJECTS }}
+          target-env: ${{ needs.fetch.outputs.TARGET_GITOPS_BRANCH }}
+          human-readable-image-tag: ${{ needs.fetch.outputs.TIME_TAG }}
+          git-hash-tag-for-comment: ${{ needs.fetch.outputs.HASH_TAG }}
+
+      - if: ${{ !env.ACT }}
+        name: 🚀 [SSOT/GITOPS-PUSH] Push commit to GitOps Repository
+        uses: cpina/github-action-push-to-another-repository@v1.7
+        env:
+          API_TOKEN_GITHUB: ${{ secrets.SA_DEPLOY_GIT_PAT }}
+        with:
+          # Source Setting
+          source-directory: ${{ env.gitops-path }}
+          # Target Setting
+          destination-github-username: ${{ github.repository_owner }}
+          destination-repository-name: ${{ env.GITOPS_REPO_NAME }}
+          target-branch: ${{ needs.fetch.outputs.TARGET_GITOPS_BRANCH }}
+          # Commit Setting
+          user-email: "github-actions@github.com"
+          user-name: "github-actions"
+
+  # ========================
+  # *** [ Align GitOps ] ***
+  # ========================
+  align-gitops:
+    needs: [ fetch, build ]
+    if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+    runs-on: [ gha-runner-small ]
+    env:
+      gitops-path: ./gitops
+    steps:
+      - name: 🚀 [INIT] Clone this repository
+        uses: actions/checkout@v4
+
+      - name: 🚀 [INIT] Clone GitOps repository
+        uses: actions/checkout@v4
+        with:
+          path: ${{ env.gitops-path }}
+          repository: ${{ github.repository_owner }}/${{ env.GITOPS_REPO_NAME }}
+          ref: ${{ needs.fetch.outputs.TARGET_GITOPS_BRANCH }}
+          token: ${{ secrets.SA_DEPLOY_GIT_PAT }}
+
+      # ------------------------------
+      # > PREPARE
+      # ------------------------------
+      - name: 🚀 [PREPARE] Set chart directory
+        id: set-chart-directory
+        run: |
+          GITOPS_CHART_DIR="${{ env.gitops-path }}"
+          echo "🔎 GITOPS_CHART_DIR : ${GITOPS_CHART_DIR}"
+          echo "GITOPS_CHART_DIR=${GITOPS_CHART_DIR}" >> $GITHUB_ENV
+
+      # ------------------------------
+      # > SSOT: Write down values
+      # ------------------------------
+      - name: 🚀 [SSOT/IMAGE-TAG] (${{ needs.fetch.outputs.TARGET_GITOPS_BRANCH }}) Update 'image tag(${{ github.ref_name }})' with 'comment(${{ needs.fetch.outputs.HASH_TAG }})'
+        uses: kidsworld-service/set-image-tag-in-chart-action@main
+        with:
+          monorepo-charts-path: ${{ env.GITOPS_CHART_DIR }}
+          trimmed-projects: ${{ needs.fetch.outputs.TRIMMED_PROJECTS }}
+          target-env: ${{ needs.fetch.outputs.TARGET_GITOPS_BRANCH }}
+          human-readable-image-tag: ${{ needs.fetch.outputs.SEM_VER_RC }}
+          git-hash-tag-for-comment: ${{ needs.fetch.outputs.HASH_TAG }}
+
+      - if: ${{ !env.ACT }}
+        name: 🚀 [SSOT/GITOPS-PUSH] Push commit to GitOps Repository
+        uses: cpina/github-action-push-to-another-repository@v1.7
+        env:
+          API_TOKEN_GITHUB: ${{ secrets.SA_DEPLOY_GIT_PAT }}
+        with:
+          # Source Setting
+          source-directory: ${{ env.gitops-path }}
+          # Target Setting
+          destination-github-username: ${{ github.repository_owner }}
+          destination-repository-name: ${{ env.GITOPS_REPO_NAME }}
+          target-branch: ${{ needs.fetch.outputs.TARGET_GITOPS_BRANCH }}
+          # Commit Setting
+          user-email: "github-actions@github.com"
+          user-name: "github-actions"
+
+  post-release:
+    needs: [ align-gitops ]
+    if: ${{ startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '_rc') }} # ! for only releases, not candidates
+    runs-on: [ gha-runner-small ]
+    env:
+      props-path: "./ci.properties"
+      props-name: "appVersion"
+    steps:
+      - name: 🚀 [INIT] Clone this repository on 'main' branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.SA_DEPLOY_GIT_PAT }}
+
+      # ------------------------------
+      # > Patch - Application Version
+      # ------------------------------
+      - name: 🚀 [PATCH] Read exist 'appVersion'
+        id: read-current-props
+        uses: christian-draeger/read-properties@1.1.1
+        with:
+          path: ${{ env.props-path }}
+          properties: ${{ env.props-name }}
+
+      - name: 🚀 [PATCH] Increase patch version
+        id: increased
+        run: |
+          CURRENT_VERSION="${{ steps.read-current-props.outputs.appVersion }}"
+          INCREASED_VERSION=$(echo "${CURRENT_VERSION}" | awk -F'.' '{print $1 "." $2 "." (($3+1))}')
+          cat <<EOF
+          🔎 CURRENT_VERSION   : ${CURRENT_VERSION}
+          🔎 INCREASED_VERSION : ${INCREASED_VERSION} (<< output: VERSION)
+          EOF
+          echo "VERSION=${INCREASED_VERSION}" >> $GITHUB_ENV
+
+      - name: 🚀 [PATCH] Write increased 'appVersion'
+        uses: dschanoeh/change-property@v1.1.1
+        with:
+          file: ${{ env.props-path }}
+          property: ${{ env.props-name }}
+          value: ${{ env.VERSION }}
+
+      - name: 🚀 [PATCH] Read increased 'appVersion'
+        id: read-increased-props
+        uses: christian-draeger/read-properties@1.1.1
+        with:
+          path: ${{ env.props-path }}
+          properties: ${{ env.props-name }}
+
+      # ------------------------------
+      # > Push
+      # ------------------------------
+      - if: ${{ !env.ACT }}
+        name: 🚀 [PUSH] Push commit to Repository
+        uses: cpina/github-action-push-to-another-repository@v1.7
+        env:
+          API_TOKEN_GITHUB: ${{ secrets.SA_DEPLOY_GIT_PAT }}
+        with:
+          # Source Setting
+          source-directory: "./" # Has cloned current directory
+          # Target Setting
+          destination-github-username: ${{ github.repository_owner }}
+          destination-repository-name: ${{ github.event.repository.name }}
+          target-branch: main
+          # Commit Setting
+          user-email: "github-actions@github.com"
+          user-name: "github-actions"
+          commit-message: "Auto increased patch version: ${{ steps.read-current-props.outputs.appVersion }} -> ${{ steps.read-increased-props.outputs.appVersion }}"
+
+  notify:
+    if: always()
+    name: Notify
+    needs:
+      - fetch
+      - build
+      - push-to-gitops
+      - align-gitops
+      - post-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare Slack message
+        id: prepare-slack-message
+        uses: kidsworld-service/generate-slack-message-action@main
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Post to a Slack channel
+        id: slack
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          channel-id: "${{ needs.fetch.outputs.TARGET_GITOPS_BRANCH == 'prod' && 'alarm-deploy' || 'alarm-deploy-dev-beta' }}"
+          payload: |
+            ${{ env.SLACK_MSG }}
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}

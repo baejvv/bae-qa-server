@@ -1,0 +1,159 @@
+name: "Extract from Repository"
+description: "Extract variables from repository"
+
+inputs:
+  working-directory:
+    description: "Where the git repository is located"
+    required: false
+    default: "."
+
+outputs:
+  # app
+  APP_NAME:
+    description: "Application name (extracted from 'ci.properties')"
+    value: ${{ env.APP_NAME }}
+  APP_VERS:
+    description: "Application version (extracted from 'ci.properties')"
+    value: ${{ env.APP_VERS }}
+  # git
+  GIT_BRANCH_SHA:
+    description: "Current commit hash value"
+    value: ${{ env.GIT_BRANCH_SHA }}
+  GIT_BRANCH:
+    description: "Current branch name (extracted based on prefix)"
+    value: ${{ env.GIT_BRANCH }}
+  TARGET_GITOPS_BRANCH:
+    description: "Target environment for branch name of GitOps"
+    value: ${{ env.TARGET_GITOPS_BRANCH }}
+  # git
+  TIMESTAMP:
+    description: "Tag: yymmdd-HHMMSS"
+    value: ${{ env.TIMESTAMP }}
+  TIME_TAG:
+    description: "Tag: vers_yymmdd-HHMMSS"
+    value: ${{ env.TIME_TAG }}
+  HASH_TAG:
+    description: "Tag: vers_HASHED"
+    value: ${{ env.HASH_TAG }}
+
+runs:
+  using: composite
+  steps:
+    - name: 🏃 [EXTRACT/REPO] Check inputs
+      shell: bash
+      run: |
+        cat <<EOF
+        🔎 working-directory : ${{ inputs.working-directory }}
+        EOF
+
+    # ========================================
+    # // app
+    # ========================================
+    - name: 🏃 [EXTRACT/REPO] app-name
+      id: app-name
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        TRIMMED_APP_NAME=$(cat ci.properties | grep "appName" |cut -d '=' -f 2 | tr -d '\n' |  tr -d ' ')
+        APP_NAME=$(echo ${TRIMMED_APP_NAME} | tr '[:upper:]' '[:lower:]')
+        APP_NAME=$(echo ${APP_NAME//kidsworld-})
+        echo "> '${TRIMMED_APP_NAME}' => '${APP_NAME}'"
+        echo "APP_NAME=${APP_NAME}" >> $GITHUB_ENV
+
+    - name: 🏃 [EXTRACT/REPO] app-vers
+      id: app-vers
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        FIRST_GREPPED_APP_VERS=$(cat ci.properties | grep "appVersion" | tr -d ' ' | head -n 1)
+        TRIMMED_APP_VERS=$(echo ${FIRST_GREPPED_APP_VERS} | awk -F '=' '{print $2}')
+        echo "> '${FIRST_GREPPED_APP_VERS}' => '${TRIMMED_APP_VERS}'"
+        echo "APP_VERS=${TRIMMED_APP_VERS}" >> $GITHUB_ENV
+
+    # ========================================
+    # // git
+    # ========================================
+    - name: 🏃 [EXTRACT/REPO] git-branch_sha
+      id: git-branch_sha
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        SHORTEN_SHA=$(git rev-parse --short HEAD)
+        echo "> SHORTEN_SHA: ${SHORTEN_SHA}"
+        echo "GIT_BRANCH_SHA=${SHORTEN_SHA}" >> $GITHUB_ENV
+
+    - name: 🏃 [EXTRACT/REPO] git-branch
+      id: git-branch
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        THIS_BRANCH=$(git branch --show-current | awk -F "/" '{print $1}')
+        [ -z ${THIS_BRANCH} ] && {
+            echo "> 'THIS_BRANCH' is empty. Use '${{ github.ref_name }}' to replace."
+            THIS_BRANCH=${{ github.ref_name }}
+        }
+        [ ${{ env.ACT }} ] && [ ${MOCK_BRANCH} ] && {
+            THIS_BRANCH=${MOCK_BRANCH}
+            echo "> THIS_BRANCH: ${THIS_BRANCH} (override for ACT in local)"
+        }
+        echo "GIT_BRANCH=${THIS_BRANCH}" >> $GITHUB_ENV
+
+    - name: 🏃 [EXTRACT/REPO] target-gitops-branch
+      id: target-gitops-branch
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        THIS_BRANCH="${{ env.GIT_BRANCH }}"
+        [[ ${THIS_BRANCH} = develop ]] && {
+            TARGET="dev"
+            echo "🔎 ${THIS_BRANCH} is paired with '${TARGET}' branch"
+            echo "TARGET_GITOPS_BRANCH=${TARGET}" >> $GITHUB_ENV
+            exit 0
+        }
+
+        [[ ${THIS_BRANCH} =~ ^v([0-9]|[1-9][0-9]*)\.([0-9]|[1-9][0-9]*)\.([0-9]|[1-9][0-9]*)_rc([0-9]|[1-9][0-9]*)$ ]] ||
+        [[ ${THIS_BRANCH} = hotfix* ]] && {
+            TARGET="beta"
+            echo "🔎 ${THIS_BRANCH} is paired with '${TARGET}' branch"
+            echo "TARGET_GITOPS_BRANCH=${TARGET}" >> $GITHUB_ENV
+            exit 0
+        }
+
+        [[ ${THIS_BRANCH} =~ ^v([0-9]|[1-9][0-9]*)\.([0-9]|[1-9][0-9]*)\.([0-9]|[1-9][0-9]*)$ ]] && {
+            TARGET="prod"
+            echo "🔎 ${THIS_BRANCH} is paired with '${TARGET}' branch"
+            echo "TARGET_GITOPS_BRANCH=${TARGET}" >> $GITHUB_ENV
+            exit 0
+        }
+
+        DUMMY_TARGET="non-pushing"
+        echo "No matching pattern to '${THIS_BRANCH}'! 'TARGET_GITOPS_BRANCH' name set '${DUMMY_TARGET}'.."
+        echo "TARGET_GITOPS_BRANCH=${DUMMY_TARGET}" >> $GITHUB_ENV
+
+    # ========================================
+    # // tag
+    # ========================================
+    - name: 🏃 [EXTRACT/REPO] timestamp
+      id: timestamp
+      shell: bash
+      run: |
+        export TZ="Asia/Seoul"
+        echo "TIMESTAMP=$(date '+%y%m%d-%H%M%S')" >> $GITHUB_ENV
+
+    - name: 🏃 [EXTRACT/REPO] time-tag
+      id: time-tag
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        TIME_TAG="${{ env.TIMESTAMP }}"
+        echo "> TIME_TAG: ${TIME_TAG}"
+        echo "TIME_TAG=${TIME_TAG}" >> $GITHUB_ENV
+
+    - name: 🏃 [EXTRACT/REPO] hash-tag
+      id: hash-tag
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        HASH_TAG="${{ env.GIT_BRANCH_SHA }}"
+        echo "> HASH_TAG: ${HASH_TAG}"
+        echo "HASH_TAG=${HASH_TAG}" >> $GITHUB_ENV

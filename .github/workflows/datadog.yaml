@@ -1,0 +1,81 @@
+name: Datadog
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - develop
+    paths:
+      - 'ci.properties'
+
+env:
+  # GitOps: Integration target of 'git branches'
+  GITOPS_REPO_NAME: "qa-gitops"
+  TEAM: "qa"
+
+jobs:
+  setup-matrix:
+    runs-on: [ gha-runner-small ]
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract keys and convert to JSON
+        id: set-matrix
+        run: |
+          keys=$(grep -o "^[^#=]*" ci.properties | grep -vE "appVersion|appName" | jq -R . | tr -d "[:space:]" |  jq -sc 'map({key: .})')
+          echo "matrix=$keys" >> $GITHUB_OUTPUT
+
+  use-matrix:
+    needs: setup-matrix
+    name: Datadog
+    runs-on: [ gha-runner-small ]
+    strategy:
+      matrix:
+        project: ${{fromJson(needs.setup-matrix.outputs.matrix)}}
+    env:
+      gitops-path: ./gitops
+    steps:
+      - name: 🚀 [INIT] Clone GitOps repository
+        uses: actions/checkout@v4
+        with:
+          path: ${{ env.gitops-path }}
+          repository: ${{ github.repository_owner }}/${{ env.GITOPS_REPO_NAME }}
+          ref: dev
+          token: ${{ secrets.SA_DEPLOY_GIT_PAT }}
+
+      - name: 🚀 [INIT] Find Service name
+        run: |
+          FILE_PATH="${{ env.gitops-path }}/${{ matrix.project.key }}/values.yaml"
+          SERVICE_NAME=`yq '.app.nameWithRole' ${FILE_PATH}`
+          echo "SERVICE_NAME=${SERVICE_NAME}" >> $GITHUB_ENV
+
+      - name: 🚀 [INIT] Find Application name
+        id: find-application-name
+        uses: mad9000/actions-find-and-replace-string@5
+        with:
+          source: ${{ env.GITOPS_REPO_NAME }}
+          find: '-gitops'
+          replace: ''
+
+      - uses: arcxp/datadog-service-catalog-metadata-provider@v2
+        with:
+          schema-version: v2.1
+          datadog-hostname: ${{ secrets.DATADOG_HOST }}
+          datadog-key: ${{ secrets.DATADOG_API_KEY }}
+          datadog-app-key: ${{ secrets.DATADOG_APPLICATION_KEY }}
+          service-name: ${{ env.SERVICE_NAME }}
+          application: ${{ steps.find-application-name.outputs.value }}
+          team: ${{ env.TEAM }}
+          email: ''
+          slack-support-channel: ''
+          links: |
+            - name: ${{ env.SERVICE_NAME }}-repo
+              url: https://github.com/${{ github.repository }}
+              type: repo
+              provider: github
+            - name: ${{ env.SERVICE_NAME }}-gitops-repo
+              url: https://github.com/${{ github.repository_owner }}/${{ env.GITOPS_REPO_NAME }}
+              type: repo
+              provider: github

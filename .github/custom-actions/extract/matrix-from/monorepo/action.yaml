@@ -1,0 +1,142 @@
+name: "Extract Matrix for Project (for monorepo)"
+description: "Extract matrix (part of 'project') from Project"
+
+inputs:
+  common-includes:
+    description: "The files or folders (delimiter: ',') are included commonly to check all (basic include: .github/workflows/ & .github/custom-actions/)"
+    required: true
+    default: "gradle.properties, *.gradle.kts, Dockerfile.app.build"
+  common-ignores:
+    description: "The files or folders (delimiter: ',') are ignored on all check step (basic include: ci.properties)"
+    required: true
+  target-projects:
+    description: "The sub-projects names (delimiter: ',') can build a runnable package as interface layer (or port layer)"
+    required: true
+    default: "student, teacher"
+  working-directory:
+    description: "Where the package management file exist"
+    required: false
+    default: "."
+
+outputs:
+  # at 'trim'
+  ALL_PROJECTS:
+    description: "All projects with only trim (no diff checked) - ex. 'student teacher' "
+    value: ${{ env.TRIMMED_PROJECTS }}
+  # at 'diff' step
+  HAS_DIFF_PROJECTS:
+    description: "The flag that matrix exist on job - 'true' is only set when the 'PROJECTS' output exist - ex. 'true'"
+    value: ${{ env.HAS_DIFF_PROJECTS }}
+  PROJECTS:
+    description: "The git diff exist command checked with dependencies - ex. 'student, teacher' "
+    value: ${{ env.DIFF_EXIST_PROJECTS }}
+  TRIMMED_PROJECTS:
+    description: "The git diff exist command checked with dependencies - ex. 'student teacher' "
+    value: ${{ env.TRIMMED_DIFF_EXIST_PROJECTS }}
+  # at 'matrix' step
+  MATRIX_PROJECT:
+    description: "Ths jsonString format consist of 'PROJECTS' output for matrix - ex. '{\"project\":[\"student\",\"teacher\"]}'"
+    value: ${{ env.MATRIX_PROJECT }}
+
+runs:
+  using: composite
+  steps:
+    - name: 🏃 [EXTRACT/MATRIX] Check inputs
+      shell: bash
+      run: |
+        cat <<EOF
+        🔎 common-includes        : ${{ inputs.common-includes }}
+        🔎 target-projects        : ${{ inputs.target-projects }}
+        🔎 working-directory      : ${{ inputs.working-directory }}
+        EOF
+
+    - name: 🏃 [EXTRACT/MATRIX] Trim target-projects & common-includes
+      id: trim
+      shell: bash
+      run: |
+        TRIMMED_PROJECTS=$(echo "${{ inputs.target-projects }}" | sed -e 's/, $//g' | sed -e 's/,/ /g')
+        TRIMMED_PROJECTS=$(echo "${TRIMMED_PROJECTS}" | sed -e 's/\[//g' -e 's/\]//g')
+        echo "🔎 TRIMMED_PROJECTS: ${TRIMMED_PROJECTS}"
+        echo "TRIMMED_PROJECTS=${TRIMMED_PROJECTS}" >> $GITHUB_ENV
+
+        TRIMMED_INCLUDES="${{ inputs.common-includes }}"
+        TRIMMED_INCLUDES="${TRIMMED_INCLUDES}, .github/workflows/"
+        TRIMMED_INCLUDES="${TRIMMED_INCLUDES}, .github/custom-actions/"
+        TRIMMED_INCLUDES=$(echo "${TRIMMED_INCLUDES}" | sed -e 's/\[//g' -e 's/\]//g')
+        TRIMMED_INCLUDES=$(echo "${TRIMMED_INCLUDES}" | sed -e 's/, $//g' | sed -e 's/,/ /g')
+        echo "🔎 TRIMMED_INCLUDES: ${TRIMMED_INCLUDES}"
+        echo "TRIMMED_INCLUDES=${TRIMMED_INCLUDES}" >> $GITHUB_ENV
+
+        TRIMMED_IGNORES="${{ inputs.common-ignores }}"
+        TRIMMED_IGNORES="${TRIMMED_IGNORES}, ci.properties"
+        TRIMMED_IGNORES=$(echo "${TRIMMED_IGNORES}" | sed -e 's/\[//g' -e 's/\]//g')
+        TRIMMED_IGNORES=$(echo "${TRIMMED_IGNORES}" | sed -e 's/, / \:\!/g')
+        echo "🔎 TRIMMED_IGNORES: ${TRIMMED_IGNORES}"
+        echo "TRIMMED_IGNORES=${TRIMMED_IGNORES}" >> $GITHUB_ENV
+
+    - name: 🏃 [EXTRACT/MATRIX] Check diff per project
+      id: diff
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        for project in ${{ env.TRIMMED_PROJECTS }}; do
+
+            depend_on=$(cat ci.properties | grep -w ${project} | cut -d '=' -f 2 | tr -d '\n')
+            diff_check_target="${project} ${depend_on} ${{ env.TRIMMED_INCLUDES }} ${{ env.TRIMMED_IGNORES }}"
+
+            cat <<EOF
+        ===================================
+        🔎 [ Monorepo Git Diff Checklist ]
+        -----------------------------------
+        > project   : ${project}
+        > depend_on : ${depend_on}
+        > diff_check_target: ${diff_check_target}
+        -----------------------------------
+        EOF
+
+            diff_count=$(git diff HEAD^ -- ${diff_check_target} | wc -l | tr -d ' ')
+            echo "🔎 In-progress > diff_count: '${diff_count}'"
+            if [[ ${diff_count} > 0 ]]; then
+                DIFF_EXIST_PROJECTS="${DIFF_EXIST_PROJECTS}, ${project}"
+                echo "> '${project}' has some diff from previous commit"
+                echo "> DIFF_EXIST_PROJECTS: ${DIFF_EXIST_PROJECTS}" && echo ""
+                continue
+            fi
+            echo "🔎 > '${project}' has no diff from previous commit (Skip to mark)"
+            echo "🔎 > DIFF_EXIST_PROJECTS: ${DIFF_EXIST_PROJECTS}" && echo ""
+        done
+
+        TRIMMED_DIFF_EXIST_PROJECTS=$(echo ${DIFF_EXIST_PROJECTS} | tr -d ' ' | sed -e 's/,/ /g' -e 's/^ //g')
+        cat <<EOF
+        ==========================================================================================
+        🔎 [RESULT] DIFF_EXIST_PROJECTS        : ${DIFF_EXIST_PROJECTS}
+        🔎 [RESULT] TRIMMED_DIFF_EXIST_PROJECTS: ${TRIMMED_DIFF_EXIST_PROJECTS}
+        ==========================================================================================
+        EOF
+
+        [[ ${DIFF_EXIST_PROJECTS} ]] && {
+            echo "HAS_DIFF_PROJECTS=true" >> $GITHUB_ENV
+            echo "DIFF_EXIST_PROJECTS=${DIFF_EXIST_PROJECTS}" >> $GITHUB_ENV
+            echo "TRIMMED_DIFF_EXIST_PROJECTS=${TRIMMED_DIFF_EXIST_PROJECTS}" >> $GITHUB_ENV
+            exit 0
+        }
+        echo "DIFF_EXIST_PROJECTS=[\"no_module-to_avoid_syntax_error\"]" >> $GITHUB_ENV
+
+    - if: ${{ env.HAS_DIFF_PROJECTS }}
+      name: 🏃 [EXTRACT/MATRIX]
+      id: matrix
+      shell: bash
+      run: |
+        MATRIX_PROJECT="{\"project\": []}"
+        MATRIX_PROJECT=$(echo ${MATRIX_PROJECT} | jq -r)
+
+        echo "🔎 Init....... > MATRIX_PROJECT: ${MATRIX_PROJECT}"
+        for project in ${{ env.TRIMMED_DIFF_EXIST_PROJECTS }}; do
+            MATRIX_PROJECT=$(echo ${MATRIX_PROJECT} | jq  -r ".project += [\"${project}\"]")
+            echo "🔎 In-progress > MATRIX_PROJECT: ${MATRIX_PROJECT}"
+        done
+
+        MATRIX_PROJECT=$(echo "${MATRIX_PROJECT}" | tr -d '\n' | tr -d '  ')
+        echo "🔎 [Convert-jsonString] (1/2) Shortten > MATRIX_PROJECT: MATRIX_PROJECT: ${MATRIX_PROJECT}"
+        echo "🔎 [Convert-jsonString] (2/2) Check JQ > MATRIX_PROJECT: $(echo ${MATRIX_PROJECT} | jq '.')"
+        echo "MATRIX_PROJECT=$MATRIX_PROJECT" >> $GITHUB_ENV

@@ -1,0 +1,11 @@
+## ignore dev env.
+Dockerfile_local
+.idea/
+db.sqlite3
+*.pyc
+__pycache__/
+./
+node_modules
+/apps/e2e_tests/video_class_healthcheck/test_screenshots
+Dockerfile_local
+*.iml

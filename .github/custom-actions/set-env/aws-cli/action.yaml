@@ -1,0 +1,95 @@
+name: "Set AWS environment with Assuming"
+description: "Serve AWS CLI environment"
+
+inputs:
+  # ------------------------------
+  # ! common
+  # ------------------------------
+  aws-region:
+    description: "AWS Region"
+    required: false
+    default: "ap-northeast-2"
+  prefix-id:
+    description: "Prefix string to consist AWS assumed session name"
+    required: true
+  unique-id:
+    description: "Unique string to consist AWS assumed session name"
+    required: true
+  assume-duration-seconds:
+    description: "Valid session duration on IAM Role Assuming (unit: second / range: 900 ~ 43200, default: 3600)"
+    required: false
+    default: "3600"
+  # ------------------------------
+  # ! for ACT in local running
+  # ------------------------------
+  act-role-arn:
+    description: "IAM Role ARN (for ACT in local running)"
+    required: true
+  act-session-name:
+    description: "Prefix string to verify assumed session (for ACT in local running)"
+    required: false
+  # ------------------------------
+  # ! for self-hosted runner
+  # ------------------------------
+  federated-role-name:
+    description: "IAM Role name federated on IRSA (for self-hosted runner in EKS)"
+    required: true
+  web-identity-token-file:
+    description: "IRSA issued token path to use AssumeRoleWithWebIdentity API (for self-hosted runner in EKS)"
+    required: false
+    default: /var/run/secrets/eks.amazonaws.com/serviceaccount/token
+
+runs:
+  using: composite
+  steps:
+    - name: 🏃 [AWS] Check inputs
+      shell: bash
+      run: |
+        cat <<EOF
+        🔎 aws-region : ${{ inputs.aws-region }}
+        🔎 prefix-id  : ${{ inputs.prefix-id }}
+        🔎 unique-id  : ${{ inputs.unique-id }}
+        🔎 assume-duration-seconds : ${{ inputs.assume-duration-seconds }}
+        🔎 act-role-arn     : ${{ inputs.act-role-arn }}
+        🔎 act-session-name : ${{ inputs.act-session-name }}
+        🔎 federated-role-name : ${{ inputs.federated-role-name }}
+        🔎 web-identity-token-file : ${{ inputs.web-identity-token-file }}
+        EOF
+
+    - name: 🏃 [AWS] Check 'aws-cli' exsits
+      id: check-aws-cli-exist
+      shell: bash
+      run: aws --version
+
+    # In ACT using IAM User
+    - if: ${{ env.ACT && !inputs.act-role-arn }}
+      name: 🏃 [AWS] Assume (for ACT in local running)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: "${{ inputs.aws-region }}"
+
+    # In ACT using IAM Role
+    - if: ${{ env.ACT && inputs.act-role-arn }}
+      name: 🏃 [AWS] Assume (for ACT in local running)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: "${{ inputs.aws-region }}"
+        role-to-assume: "${{ inputs.act-role-arn }}"
+        role-session-name: "${{ inputs.act-session-name }}-${{ inputs.prefix-id }}-${{ inputs.unique-id }}"
+        role-duration-seconds: ${{ inputs.assume-duration-seconds }}
+
+    # In Self-hosted Runner using IRSA
+    - if: ${{ !env.ACT && inputs.federated-role-name }}
+      name: 🏃 [AWS] Assume using IRSA # Ref. https://github.com/aws-actions/configure-aws-credentials#self-hosted-runners
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: "${{ inputs.aws-region }}"
+        role-to-assume: "${{ inputs.federated-role-name }}"
+        role-session-name: "${{ inputs.prefix-id }}-${{ inputs.unique-id }}"
+        role-duration-seconds: ${{ inputs.assume-duration-seconds }}
+        web-identity-token-file: "${{ inputs.web-identity-token-file }}"
+
+    - if: ${{ env.ACT }}
+      shell: bash
+      name: 🏃 [AWS] Check identify (for ACT in local running)
+      run: aws sts get-caller-identity --output json | jq

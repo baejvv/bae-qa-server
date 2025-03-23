@@ -1,0 +1,65 @@
+name: "Check RC Number in repository"
+description: "Check release candidate number with input version"
+
+inputs:
+  working-directory:
+    description: "Where the git repository is located"
+    required: false
+    default: "."
+  semantic-version:
+    description: "Sementic version to check range of release candidate"
+    required: true
+
+outputs:
+  LAST_RC_NUM:
+    description: "Last release candidate number is exist in git repository"
+    value: ${{ env.LAST_RC_NUM }}
+  NEXT_RC_NUM:
+    description: "Next release candidate number is added '1' to 'LAST_RC_NUM'"
+    value: ${{ env.NEXT_RC_NUM }}
+
+runs:
+  using: composite
+  steps:
+    - name: 🏃 [CHECK/RC-NUM] Check inputs
+      shell: bash
+      run: |
+        cat <<EOF
+        🔎 working-directory : ${{ inputs.working-directory }}
+        🔎 semantic-version  : ${{ inputs.semantic-version }}
+        EOF
+
+    - name: 🏃 [CHECK/RC-NUM] Fetch tags
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        echo "🔎 Fecth all tag data first"
+        git fetch --tags --force
+        echo "----------------------------------------------------"
+        echo "🔎 Here is all tag list"
+        git tag --list "${{ inputs.semantic-version }}_rc*"
+
+    - name: 🏃 [CHECK/RC-NUM] Select release candidates only in this version (${{ inputs.semantic-version }})
+      id: check-rc-num
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        git tag --list "${{ inputs.semantic-version }}_rc*" >> /dev/null 2>&1 || exit_code=$?
+
+        # Initial RC Number
+        [[ ${exit_code} > 0 ]] && {
+            echo "Initial candidate presented for '${{ inputs.semantic-version }}'! We need to create new release candidate number!"
+            echo "LAST_RC_NUM=(none)" >> $GITHUB_ENV
+            echo "NEXT_RC_NUM=1" >> $GITHUB_ENV
+            exit 0
+        }
+
+        # Next RC Number
+        LAST_RC_NUM=$(git tag --list "${{ inputs.semantic-version }}_rc*" | awk -F 'rc' '{print $2}' | sort --numeric-sort --reverse | head -n 1)
+        NEXT_RC_NUM=$((${LAST_RC_NUM} + 1))
+        cat <<EOF
+        🔎 LAST_RC_NUM : ${LAST_RC_NUM} // last
+        🔎 NEXT_RC_NUM : ${NEXT_RC_NUM} // increament
+        EOF
+        echo "LAST_RC_NUM=${LAST_RC_NUM}" >> $GITHUB_ENV
+        echo "NEXT_RC_NUM=${NEXT_RC_NUM}" >> $GITHUB_ENV

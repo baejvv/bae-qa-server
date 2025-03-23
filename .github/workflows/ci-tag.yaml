@@ -1,0 +1,33 @@
+name: ci-tag
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: [ gha-runner-small ]
+    steps:
+      - name: 🚀 [INIT] Clone this repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SA_DEPLOY_GIT_PAT }}
+
+      - name: 🚀 [INIT] Git committer setting with PAT
+        run: |
+          git config --global user.email "github-actions@github.com"
+          git config --global user.name "github-actions"
+          git remote -v
+
+      - name: 🚀 [EXTRACT] Get environment variables from repository
+        id: env-from-repo
+        uses: kidsworld-service/repo-env-action@main
+
+      - name: tag 생성
+        run: |
+          git tag -a v${{ env.APP_VERS }} -m "Auto created release candidate of '${{ env.APP_VERS }}'"
+          echo "🔎 Tagged new release candidate: ${{ env.APP_VERS }}"
+          git show v${{ env.APP_VERS }}
+          echo "🔎 Try to push"
+          git push origin v${{ env.APP_VERS }}
+

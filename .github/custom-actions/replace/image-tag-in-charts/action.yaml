@@ -1,0 +1,64 @@
+name: "Replace image tag in Helm chart"
+description: "Small action to replace image tag with comment at Helm chart"
+
+inputs:
+  monorepo-charts-path:
+    description: "Monorepo applications chart's home directory in GitOps repository - ex. <GitOps_repo>/app-charts/app-poc"
+    required: true
+  trimmed-projects:
+    description: "Helm chart name matched with projects (delimeter: ' ') - ex. 'student teacher'"
+    required: true
+  target-env:
+    description: "This env name would be match to values file like 'values-dev.yaml' - ex. 'dev'"
+    required: true
+  human-readable-image-tag:
+    description: "Human-readable tag to set - Values.image.tag"
+    required: true
+  git-hash-tag-for-comment:
+    description: "Set comment with git hash value - # hash1234"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: 🏃 [YQ/IMG-TAG] Check inputs
+      shell: bash
+      run: |
+        cat <<EOF
+        🔎 monorepo-charts-path : ${{ inputs.monorepo-charts-path }}
+        🔎 trimmed-projects     : ${{ inputs.trimmed-projects }}
+        🔎 target-env           : ${{ inputs.target-env }}
+        🔎 human-readable-image-tag : ${{ inputs.human-readable-image-tag }}
+        🔎 git-hash-tag-for-comment : ${{ inputs.git-hash-tag-for-comment }}
+        EOF
+
+    - name: 🏃 [YQ/IMG-TAG] Replace image tag with comment of values file per project
+      shell: bash
+      run: |
+        for project in ${{ inputs.trimmed-projects }}; do
+
+            edit_tag_syntax="(.image.tag = \"${{ inputs.human-readable-image-tag }}\")"
+            edit_cmt_syntax="(.image.tag line_comment=\"${{ inputs.git-hash-tag-for-comment }}\")"
+            value_file="${{ inputs.monorepo-charts-path }}/${project}/values-${{ inputs.target-env }}.yaml"
+
+            cat <<EOF
+        ===========================================================
+        🔎 project         : ${project}
+        🔎 edit_tag_syntax : ${edit_tag_syntax}
+        🔎 edit_cmt_syntax : ${edit_cmt_syntax}
+        🔎 value_file      : ${value_file}
+        -----------------------------------------------------------
+        🔎 [Writed image tag - ${project}] at ${value_file}
+        -----------------------------------------------------------
+        EOF
+            echo "🔎 > Before"
+            grep -A1 "image:" ${value_file}
+            echo ""
+
+            yq eval -i "${edit_tag_syntax}" ${value_file}
+            yq eval -i "${edit_cmt_syntax}" ${value_file}
+
+            echo "🔎 > After"
+            grep -A1 "image:" ${value_file}
+            echo ""
+        done

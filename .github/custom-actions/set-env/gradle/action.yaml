@@ -1,0 +1,79 @@
+name: "Set Gradle environment"
+description: "Serve Gradle environment"
+
+inputs:
+  gradle-version:
+    description: "Fixed gradle version for naming of dist zip file (check release: https://services.gradle.org/distributions/)"
+    required: false
+    default: "7.5"
+  java-version:
+    description: "Fixed java version"
+    required: false
+    default: "11"
+  working-directory:
+    description: "Where 'gradlew' file and 'gradle' folder exist"
+    required: false
+    default: "."
+
+runs:
+  using: composite
+  steps:
+    - name: 🏃 [GRADLE/JVM] Check inputs
+      id: bridge
+      shell: bash
+      run: |
+        cat <<EOF
+        🔎 gradle-version    : ${{ inputs.gradle-version }}
+        🔎 java-version      : ${{ inputs.java-version }}
+        🔎 working-directory : ${{ inputs.working-directory }}
+        EOF
+
+        echo "GRADLE_VERS=${{ inputs.gradle-version }}" >> $GITHUB_ENV
+        echo "JAVA_VERS=${{ inputs.java-version }}" >> $GITHUB_ENV
+        echo "WORK_DIR=${{ inputs.working-directory }}" >> $GITHUB_ENV
+
+    - if: ${{ !env.ACT }}
+      name: 🏃 [GRADLE/JVM] Install java (${{ env.JAVA_DIST }}:${{ env.JAVA_VERS }})
+      uses: actions/setup-java@v3
+      with:
+        distribution: 'jdkfile'
+        jdkFile: '/runnertmp/jdk-${{ env.JAVA_VERS }}.tar.gz'
+        java-version: ${{ env.JAVA_VERS }}
+        architecture: x64
+        cache: 'gradle'
+
+    - name: 🏃 [GRADLE/JVM] Check 'java' exsits
+      continue-on-error: true
+      shell: bash
+      run: java --version
+
+    - name: 🏃 [GRADLE/JVM] Pull gradle cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: ${{ runner.os }}-gradle-${{ matrix.project }}-${{ hashFiles('settings.gradle.kts', 'build.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-${{ matrix.project }}-
+          ${{ runner.os }}-gradle-
+
+    - name: 🏃 [GRADLE] Overwrite 'gradle-wrapper.properties'
+      shell: bash
+      working-directory: ${{ env.WORK_DIR }}
+      run: |
+        cat <<EOF > gradle/wrapper/gradle-wrapper.properties && cat gradle/wrapper/gradle-wrapper.properties
+        ## ! REPLACED BY GITHUB WORKFLOW
+        distributionBase=GRADLE_USER_HOME
+        distributionPath=wrapper/dists
+        distributionUrl=https\://services.gradle.org/distributions/gradle-${{ env.GRADLE_VERS }}-bin.zip
+        zipStoreBase=GRADLE_USER_HOME
+        zipStorePath=wrapper/dists
+        EOF
+
+    - name: 🏃 [GRADLE] Check wrapper dependencies
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      run: |
+        echo "Generating the Wrapper files requires an installed version of the Gradle runtime on runner"
+        chmod +x ./gradlew && ./gradlew wrapper

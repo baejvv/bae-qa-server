@@ -1,0 +1,99 @@
+name: "Replace image config in Helm chart from App repository"
+description: "Small action to replace image configurations"
+
+inputs:
+  monorepo-charts-path:
+    description: "Monorepo applications chart's home directory in GitOps repository - ex. <GitOps_repo>/app-charts/app-poc"
+    required: true
+  trimmed-projects:
+    description: "Helm chart name matched with projects (delimeter: ' ') - ex. 'student teacher'"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: 🏃 [YQ/IMG-TAG] Check inputs
+      shell: bash
+      run: |
+        cat <<EOF
+        🔎 monorepo-charts-path : ${{ inputs.monorepo-charts-path }}
+        🔎 trimmed-projects     : ${{ inputs.trimmed-projects }}
+        EOF
+
+    # ------------------------------
+    # > CONFIG : BASIC
+    # ------------------------------
+    - name: 🏃 [CONFIG/BASIC] Generate default configuration schema
+      shell: bash
+      run: |
+        for project in ${{ inputs.trimmed-projects }}; do
+            cd ./${project}/src/main/resources/
+            cp application.yaml application-ci.yaml
+            yq eval -i '(.server.port = "${SERVER_PORT}")' application-ci.yaml
+            yq eval -i '(.management.server.port = "${ACTUATOR_PORT}")' application-ci.yaml
+
+            echo "🔎 [Edit commonly] at application-ci.yaml"
+            cat application-ci.yaml | egrep "SERVER_PORT|ACTUATOR_PORT"
+            echo ""
+            cd -
+        done
+
+    # ------------------------------
+    # > CONFIG : PER PROJECT
+    # ------------------------------
+    - name: 🏃 [CONFIG/PER-PROJECT] Edit '${{ env.project-name }}' configuration schema
+      shell: bash
+      env:
+        project-name: student
+      run: |
+        SELECTED_SCHEMA="./${{ env.project-name }}/src/main/resources/application-ci.yaml"
+        [[ ! -f "${SELECTED_SCHEMA}" ]] && {
+            echo "🔎 <-- Skip! (no exist)"
+            exit 0
+        } || \
+        echo "🔎 <-- Try to replace"
+
+        yq eval -i '(.somthing.key1 = "${STH_VALUE1}")' ${SELECTED_SCHEMA}
+        yq eval -i '(.somthing.key2 = "${STH_VALUE2}")' ${SELECTED_SCHEMA}
+        yq eval -i '(.somthing.key3 = "${STH_VALUE3}")' ${SELECTED_SCHEMA}
+
+        echo "🔎 [Edit per project] at ${SELECTED_SCHEMA}"
+        cat ${SELECTED_SCHEMA}
+
+    - name: 🏃 [CONFIG/PER-PROJECT] Edit '${{ env.project-name }}' configuration schema
+      shell: bash
+      env:
+        project-name: teacher
+      run: |
+        SELECTED_SCHEMA="./${{ env.project-name }}/src/main/resources/application-ci.yaml"
+        [[ ! -f "${SELECTED_SCHEMA}" ]] && {
+            echo "🔎 <-- Skip! (no exist)"
+            exit 0
+        } || \
+        echo "🔎 <-- Try to replace"
+
+        yq eval -i '(.other-thing.key1 = "${OTHER_VALUE1}")' ${SELECTED_SCHEMA}
+        yq eval -i '(.other-thing.key2 = "${OTHER_VALUE2}")' ${SELECTED_SCHEMA}
+        yq eval -i '(.other-thing.key3 = "${OTHER_VALUE3}")' ${SELECTED_SCHEMA}
+
+        echo "🔎 [Edit per project] at ${SELECTED_SCHEMA}"
+        cat ${SELECTED_SCHEMA}
+
+    # ------------------------------
+    # > SSOT: Write down config
+    # ------------------------------
+    - name: 🏃 [SSOT/CONFIG] Generate default configuration schema
+      shell: bash
+      run: |
+        for project in ${{ inputs.trimmed-projects }}; do
+            schema="./${project}/src/main/resources/application-ci.yaml"
+            target_path="${{ inputs.monorepo-charts-path }}/${project}/configs/application.yaml"
+            cat <<EOF
+        🔎 project      : ${project}
+        🔎 schema       : ${schema}
+        🔎 target_path  : ${target_path}
+        EOF
+            cp ${schema} ${target_path}
+            echo "🔎 [Written config schema / ${project}] Copied! ${target_path}"
+            echo ""
+        done

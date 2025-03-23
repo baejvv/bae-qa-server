@@ -1,0 +1,53 @@
+name: "Extract from Self-hosted Runner Environment Variables"
+description: "Extract variables from Self-hosted Runner environment variables"
+
+outputs:
+  # region
+  AWS_REGION:
+    description: "Get 'AWS_REGION' value (set by self-hosted runner)"
+    value: ${{ env.AWS_REGION }}
+  # IRSA
+  FEDERATED_IR_NAME:
+    description: "Get 'FEDERATED_IR_NAME' value (set by self-hosted runner)"
+    value: ${{ env.FEDERATED_IR_NAME }}
+  FEDERATED_SA_NAME:
+    description: "Get 'FEDERATED_SA_NAME' value (set by self-hosted runner)"
+    value: ${{ env.FEDERATED_SA_NAME }}
+
+runs:
+  using: composite
+  steps:
+    # ========================================
+    # // region
+    # ========================================
+    - name: 🏃 [EXTRACT/RUNNER] AWS_REGION
+      id: aws-region
+      shell: bash
+      run: |
+        [ ${{ env.ACT }} ] && {
+            echo "🔎 Dummy environment variable of act (for ACT in local running)"
+            echo "AWS_REGION=${AWS_REGION:-ap-northeast-2}" >> $GITHUB_ENV
+            exit 0
+        }
+        echo "AWS_REGION=${AWS_REGION:-ap-northeast-2}" >> $GITHUB_ENV
+
+    # ========================================
+    # // IRSA
+    # ========================================
+    - if: ${{ !env.ACT }}
+      name: 🏃 [EXTRACT/RUNNER] IRSA
+      id: irsa
+      shell: bash
+      run: |
+        [ -z ${FEDERATED_IR_NAME} ] && {
+            echo "🔎 The env 'FEDERATED_IR_NAME' is not allocated."
+            echo "🔎 To assume, allocate it with the env 'FEDERATED_SA_NAME' value."
+            export FEDERATED_IR_NAME=${FEDERATED_SA_NAME}
+        }
+        [ -z ${FEDERATED_IR_NAME} ] && {
+            echo "🙅‍♂️ [SUSPEND] The env 'FEDERATED_IR_NAME' is not allocated (neither allocate try with 'FEDERATED_IR_NAME')" >&2
+            exit 1;
+        }
+        echo "🙆‍♂️ [PASS] The IRSA environments is exists."
+        echo "FEDERATED_IR_NAME=${FEDERATED_IR_NAME}" >> $GITHUB_ENV
+        echo "FEDERATED_SA_NAME=${FEDERATED_SA_NAME}" >> $GITHUB_ENV

@@ -1,0 +1,27 @@
+name: "Set Docker CLI"
+description: "Serve docker environment (in current runner)"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v2
+    - name: Set up Docker Context for Buildx
+      id: buildx-context
+      shell: bash
+      run: |
+        docker context create builders
+    - name: Set up Docker Buildx
+      shell: bash
+      run: |
+        docker buildx create --use builders
+
+    - if: ${{ !env.ACT }}
+      name: 🏃 [DOCKER] Pull docker cache
+      uses: actions/cache@v4
+      with:
+        path: /tmp/.buildx-cache
+        key: ${{ runner.os }}-multi-buildx-${{ matrix.project }}-${{ hashFiles('docker-compose.yaml') }}
+        restore-keys: |
+          ${{ runner.os }}-multi-buildx-${{ matrix.project }}-
+          ${{ runner.os }}-multi-buildx-

@@ -1,0 +1,63 @@
+name: Agora Healthcheck Test
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 9,13 * * *' # 오후 6시, 10시
+
+jobs:
+  test-api:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Perform API Test
+      id: api_test
+      run: |
+        URL="https://qa.pf.beta.i-nara.in/test/video-class"
+        RESPONSE=$(curl -w "%{http_code}" -o /dev/null -s -X POST "$URL" -m 5)
+        TIME_TAKEN=$(curl -w "%{time_total}" -o /dev/null -s -X POST "$URL" -m 5)
+
+        if [[ "$RESPONSE" -ne 200 ]]; then
+          echo "Agora Healthcheck failed with status code $RESPONSE"
+          echo "status=failure" >> $GITHUB_ENV
+          echo "message=Agora Healthcheck failed with status code $RESPONSE" >> $GITHUB_ENV
+          exit 1
+        fi
+
+        TIME_TAKEN_MS=$(echo "$TIME_TAKEN * 1000" | bc)
+        if (( $(echo "$TIME_TAKEN_MS > 5000" | bc -l) )); then
+          echo "Agora Healthcheck took too long: ${TIME_TAKEN_MS}ms"
+          echo "status=failure" >> $GITHUB_ENV
+          echo "message=Agora Healthcheck call took too long: ${TIME_TAKEN_MS}ms" >> $GITHUB_ENV
+          exit 1
+        fi
+
+        echo "Agora Healthcheck succeeded with status code 200 and took ${TIME_TAKEN_MS}ms"
+        echo "status=success" >> $GITHUB_ENV
+        echo "message=Agora Healthcheck succeeded with status code 200 and took ${TIME_TAKEN_MS}ms" >> $GITHUB_ENV
+      shell: bash
+
+    - name: Send Slack Notification
+      if: always()
+      uses: slackapi/slack-github-action@v1.26.0
+      with:
+        channel-id: "C03QAV76FLG"
+        payload: |
+          {
+            "text": "${{ env.message }}",
+            "attachments": [
+              {
+                "color": "${{ env.status == 'success' && 'good' || 'danger' }}",
+                "fields": [
+                  {
+                    "title": "Status",
+                    "value": "${{ env.status }}",
+                    "short": true
+                  }
+                ]
+              }
+            ]
+          }
+      env:
+        SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        

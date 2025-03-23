@@ -1,0 +1,2 @@
+class ThreadExecutionError(Exception):
+    pass

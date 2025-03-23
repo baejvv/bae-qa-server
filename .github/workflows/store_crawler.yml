@@ -1,0 +1,28 @@
+name: Run App Review Logic
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'  
+
+jobs:
+  run-app-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.11
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Store Crawler Logic
+        run: |
+          python $GITHUB_WORKSPACE/apps/get_app_review/android_logic.py
+          python $GITHUB_WORKSPACE/apps/get_app_review/ios_logic.py
